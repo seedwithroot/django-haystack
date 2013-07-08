@@ -67,10 +67,10 @@ class GoodCustomMockSearchIndex(indexes.SearchIndex, indexes.Indexable):
     def get_model(self):
         return MockModel
 
-    def index_queryset(self):
+    def index_queryset(self, using=None):
         return MockModel.objects.all()
 
-    def read_queryset(self):
+    def read_queryset(self, using=None):
         return MockModel.objects.filter(author__in=['daniel1', 'daniel3'])
 
     def build_queryset(self, start_date=None, end_date=None):
@@ -401,6 +401,19 @@ class SearchIndexTestCase(TestCase):
 
         self.mi.remove_object(mock)
         self.assertEqual([(res.content_type(), res.pk) for res in self.sb.search('*')['results']], [(u'core.mockmodel', u'1'), (u'core.mockmodel', u'2'), (u'core.mockmodel', u'3')])
+
+        # Put it back so we can test passing kwargs.
+        mock = MockModel()
+        mock.pk = 20
+        mock.author = 'daniel%s' % mock.id
+        mock.pub_date = datetime.datetime(2009, 1, 31, 4, 19, 0)
+
+        self.mi.update_object(mock)
+        self.assertEqual(self.sb.search('*')['hits'], 4)
+
+        self.mi.remove_object(mock, commit=False)
+        self.assertEqual([(res.content_type(), res.pk) for res in self.sb.search('*')['results']], [(u'core.mockmodel', u'1'), (u'core.mockmodel', u'2'), (u'core.mockmodel', u'3'), (u'core.mockmodel', u'20')])
+
         self.sb.clear()
 
     def test_clear(self):
@@ -525,11 +538,11 @@ class GhettoAFifthMockModelSearchIndex(indexes.SearchIndex, indexes.Indexable):
     def get_model(self):
         return AFifthMockModel
 
-    def index_queryset(self):
+    def index_queryset(self, using=None):
         # Index everything,
         return self.get_model().objects.complete_set()
 
-    def read_queryset(self):
+    def read_queryset(self, using=None):
         return self.get_model().objects.all()
 
 
@@ -539,7 +552,7 @@ class ReadQuerySetTestSearchIndex(indexes.SearchIndex, indexes.Indexable):
     def get_model(self):
         return AFifthMockModel
 
-    def read_queryset(self):
+    def read_queryset(self, using=None):
         return self.get_model().objects.complete_set()
 
 
@@ -549,7 +562,7 @@ class TextReadQuerySetTestSearchIndex(indexes.SearchIndex, indexes.Indexable):
     def get_model(self):
         return AFifthMockModel
 
-    def read_queryset(self):
+    def read_queryset(self, using=None):
         return self.get_model().objects.complete_set()
 
 

@@ -1,10 +1,16 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-from distutils.core import setup
+try:
+    from setuptools import setup
+except ImportError:
+    from ez_setup import use_setuptools
+    use_setuptools()
+    from setuptools import setup
+
 
 setup(
     name='django-haystack',
-    version='2.0.0-beta',
+    version='2.0.1-dev',
     description='Pluggable search for Django.',
     author='Daniel Lindsley',
     author_email='daniel@toastdriven.com',
@@ -34,4 +40,5 @@ setup(
         'Programming Language :: Python',
         'Topic :: Utilities'
     ],
+    zip_safe=False,
 )

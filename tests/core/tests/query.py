@@ -168,10 +168,10 @@ class BaseSearchQueryTestCase(TestCase):
 
     def test_add_field_facet(self):
         self.bsq.add_field_facet('foo')
-        self.assertEqual(self.bsq.facets, set(['foo']))
+        self.assertEqual(self.bsq.facets, {'foo': {}})
 
         self.bsq.add_field_facet('bar')
-        self.assertEqual(self.bsq.facets, set(['foo', 'bar']))
+        self.assertEqual(self.bsq.facets, {'foo': {}, 'bar': {}})
 
     def test_add_date_facet(self):
         self.bsq.add_date_facet('foo', start_date=datetime.date(2009, 2, 25), end_date=datetime.date(2009, 3, 25), gap_by='day')
@@ -190,6 +190,13 @@ class BaseSearchQueryTestCase(TestCase):
         self.bsq.add_query_facet('foo', 'baz')
         self.assertEqual(self.bsq.query_facets, [('foo', 'bar'), ('moof', 'baz'), ('foo', 'baz')])
 
+    def test_add_stats(self):
+        self.bsq.add_stats_query('foo',['bar'])
+        self.assertEqual(self.bsq.stats,{'foo':['bar']})
+
+        self.bsq.add_stats_query('moof',['bar','baz'])
+        self.assertEqual(self.bsq.stats,{'foo':['bar'],'moof':['bar','baz']})
+        
     def test_add_narrow_query(self):
         self.bsq.add_narrow_query('foo:bar')
         self.assertEqual(self.bsq.narrow_queries, set(['foo:bar']))
@@ -245,6 +252,7 @@ class BaseSearchQueryTestCase(TestCase):
         self.bsq.add_field_facet('foo')
         self.bsq.add_date_facet('foo', start_date=datetime.date(2009, 1, 1), end_date=datetime.date(2009, 1, 31), gap_by='day')
         self.bsq.add_query_facet('foo', 'bar')
+        self.bsq.add_stats_query('foo', 'bar')
         self.bsq.add_narrow_query('foo:bar')
 
         clone = self.bsq._clone()
@@ -679,6 +687,19 @@ class SearchQuerySetTestCase(TestCase):
         self.assertTrue(isinstance(sqs3, SearchQuerySet))
         self.assertEqual(len(sqs3.query.query_facets), 3)
 
+    def test_stats(self):
+        sqs = self.msqs.stats_facet('foo','bar')
+        self.assertTrue(isinstance(sqs, SearchQuerySet))
+        self.assertEqual(len(sqs.query.stats),1)
+
+        sqs2 = self.msqs.stats_facet('foo','bar').stats_facet('foo','baz')
+        self.assertTrue(isinstance(sqs2, SearchQuerySet))
+        self.assertEqual(len(sqs2.query.stats),1)
+
+        sqs3 = self.msqs.stats_facet('foo','bar').stats_facet('moof','baz')
+        self.assertTrue(isinstance(sqs3, SearchQuerySet))
+        self.assertEqual(len(sqs3.query.stats),2)
+        
     def test_narrow(self):
         sqs = self.msqs.narrow('foo:moof')
         self.assertTrue(isinstance(sqs, SearchQuerySet))
@@ -694,6 +715,11 @@ class SearchQuerySetTestCase(TestCase):
         self.assertEqual(clone._result_count, None)
         self.assertEqual(clone._cache_full, False)
         self.assertEqual(clone._using, results._using)
+
+    def test_using(self):
+        sqs = SearchQuerySet(using='default')
+        self.assertNotEqual(sqs.query, None)
+        self.assertEqual(sqs.query._using, 'default')
 
     def test_chaining(self):
         sqs = self.msqs.filter(content='foo')
@@ -725,6 +751,32 @@ class SearchQuerySetTestCase(TestCase):
 
         self.assertTrue(isinstance(sqs, SearchQuerySet))
         self.assertEqual(len(sqs.query.query_filter), 2)
+
+    def test_and_or(self):
+        """
+        Combining AND queries with OR should give
+            AND(OR(a, b), OR(c, d))
+        """
+        sqs1 = self.msqs.filter(content='foo').filter(content='oof')
+        sqs2 = self.msqs.filter(content='bar').filter(content='rab')
+        sqs = sqs1 | sqs2
+
+        self.assertEqual(sqs.query.query_filter.connector, 'OR')
+        self.assertEqual(repr(sqs.query.query_filter.children[0]), repr(sqs1.query.query_filter))
+        self.assertEqual(repr(sqs.query.query_filter.children[1]), repr(sqs2.query.query_filter))
+
+    def test_or_and(self):
+        """
+        Combining OR queries with AND should give
+            OR(AND(a, b), AND(c, d))
+        """
+        sqs1 = self.msqs.filter(content='foo').filter_or(content='oof')
+        sqs2 = self.msqs.filter(content='bar').filter_or(content='rab')
+        sqs = sqs1 & sqs2
+
+        self.assertEqual(sqs.query.query_filter.connector, 'AND')
+        self.assertEqual(repr(sqs.query.query_filter.children[0]), repr(sqs1.query.query_filter))
+        self.assertEqual(repr(sqs.query.query_filter.children[1]), repr(sqs2.query.query_filter))
 
 
 class ValuesQuerySetTestCase(SearchQuerySetTestCase):

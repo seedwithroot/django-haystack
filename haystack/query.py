@@ -1,4 +1,3 @@
-import logging
 import operator
 import warnings
 from haystack import connections, connection_router
@@ -6,6 +5,7 @@ from haystack.backends import SQ
 from haystack.constants import REPR_OUTPUT_SIZE, ITERATOR_LOAD_PER_QUERY, DEFAULT_OPERATOR
 from haystack.exceptions import NotHandled
 from haystack.inputs import Raw, Clean, AutoQuery
+from haystack.utils import log as logging
 
 
 class SearchQuerySet(object):
@@ -34,18 +34,23 @@ class SearchQuerySet(object):
         self.log = logging.getLogger('haystack')
 
     def _determine_backend(self):
+        from haystack import connections
         # A backend has been manually selected. Use it instead.
         if self._using is not None:
-            return self._using
+            self.query = connections[self._using].get_query()
+            return
 
         # No backend, so rely on the routers to figure out what's right.
-        from haystack import connections
         hints = {}
 
         if self.query:
             hints['models'] = self.query.models
 
         backend_alias = connection_router.for_read(**hints)
+
+        if isinstance(backend_alias, (list, tuple)) and len(backend_alias):
+            # We can only effectively read from one engine.
+            backend_alias = backend_alias[0]
 
         # The ``SearchQuery`` might swap itself out for a different variant
         # here.
@@ -73,7 +78,7 @@ class SearchQuerySet(object):
 
     def __repr__(self):
         data = list(self[:REPR_OUTPUT_SIZE])
-
+        
         if len(self) > REPR_OUTPUT_SIZE:
             data[-1] = "...(remaining elements truncated)..."
 
@@ -201,7 +206,7 @@ class SearchQuerySet(object):
                 try:
                     ui = connections[self.query._using].get_unified_index()
                     index = ui.get_index(model)
-                    objects = index.read_queryset()
+                    objects = index.read_queryset(using=self.query._using)
                     loaded_objects[model] = objects.in_bulk(models_pks[model])
                 except NotHandled:
                     self.log.warning("Model '%s.%s' not handled by the routers.", self.app_label, self.model_name)
@@ -353,10 +358,10 @@ class SearchQuerySet(object):
         clone.query.add_boost(term, boost)
         return clone
 
-    def facet(self, field):
+    def facet(self, field, **options):
         """Adds faceting to a query for the provided field."""
         clone = self._clone()
-        clone.query.add_field_facet(field)
+        clone.query.add_field_facet(field, **options)
         return clone
 
     def within(self, field, point_1, point_2):
@@ -370,7 +375,23 @@ class SearchQuerySet(object):
         clone = self._clone()
         clone.query.add_dwithin(field, point, distance)
         return clone
-
+    
+    def stats(self, field):
+        """Adds stats to a query for the provided field."""
+        return self.stats_facet(field, facet_fields=None)
+    
+    def stats_facet(self, field, facet_fields=None):
+        """Adds stats facet for the given field and facet_fields represents
+        the faceted fields."""
+        clone = self._clone()
+        stats_facets = []
+        try:
+            stats_facets.append(sum(facet_fields,[]))
+        except TypeError:
+            if facet_fields: stats_facets.append(facet_fields)
+        clone.query.add_stats_query(field,stats_facets)
+        return clone
+       
     def distance(self, field, point):
         """
         Spatial: Denotes results must have distance measurements from the
@@ -486,6 +507,16 @@ class SearchQuerySet(object):
             clone = self._clone()
             return clone.query.get_facet_counts()
 
+    def stats_results(self):
+        """
+        Returns the stats results found by the query.
+        """
+        if self.query.has_run():
+            return self.query.get_stats()
+        else:
+            clone = self._clone()
+            return clone.query.get_stats()
+            
     def spelling_suggestion(self, preferred_query=None):
         """
         Returns the spelling suggestion found by the query.

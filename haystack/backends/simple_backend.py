@@ -45,12 +45,16 @@ class SimpleSearchBackend(BaseSearchBackend):
         hits = 0
         results = []
         result_class = SearchResult
+        models = connections[self.connection_alias].get_unified_index().get_indexed_models()
 
         if kwargs.get('result_class'):
             result_class = kwargs['result_class']
 
+        if kwargs.get('models'):
+            models = kwargs['models']
+
         if query_string:
-            for model in connections[self.connection_alias].get_unified_index().get_indexed_models():
+            for model in models:
                 if query_string == '*':
                     qs = model.objects.all()
                 else:
@@ -71,6 +75,7 @@ class SimpleSearchBackend(BaseSearchBackend):
                 hits += len(qs)
 
                 for match in qs:
+                    match.__dict__.pop('score', None)
                     result = result_class(match._meta.app_label, match._meta.module_name, match.pk, 0, **match.__dict__)
                     # For efficiency.
                     result._model = match.__class__
@@ -115,7 +120,7 @@ class SimpleSearchQuery(BaseSearchQuery):
 
                 term_list.append(value.prepare(self))
 
-        return (' ').join(term_list)
+        return (' ').join(map(unicode, term_list))
 
 
 class SimpleEngine(BaseEngine):

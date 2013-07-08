@@ -64,3 +64,11 @@ Thanks to
     * Igor Támara (ikks) for a patch related to Unicode ``verbose_name_plural``.
     * Dan Helfman (witten) for a patch related to highlighting.
     * Matt DeBoard for refactor of ``SolrSearchBackend.search`` method to allow simpler extension of the class.
+    * Rodrigo Guzman (rz) for a fix to query handling in the ``simple`` backend.
+    * Martin J. Laubach (mjl) for fixing the logic used when combining querysets
+    * Eric Holscher (ericholscher) for a docs fix.
+    * Erik Rose (erikrose) for a quick pyelasticsearch-compatibility patch
+    * Stefan Wehrmeyer (stefanw) for a simple search filter fix
+    * Dan Watson (dcwatson) for various patches.
+    * Andrew Schoen (andrewschoen) for the addition of ``HAYSTACK_IDENTIFIER_METHOD``
+    * Pablo SEMINARIO (pabluk) for a docs fix.

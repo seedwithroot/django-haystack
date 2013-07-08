@@ -7,7 +7,7 @@ from django.db.models.base import ModelBase
 from django.utils import tree
 from django.utils.encoding import force_unicode
 from haystack.constants import VALID_FILTERS, FILTER_SEPARATOR, DEFAULT_ALIAS
-from haystack.exceptions import MoreLikeThisError, FacetingError
+from haystack.exceptions import MoreLikeThisError, FacetingError, StatsError
 from haystack.models import SearchResult
 from haystack.utils.loading import UnifiedIndex
 
@@ -291,7 +291,7 @@ class BaseSearchQuery(object):
         self.start_offset = 0
         self.end_offset = None
         self.highlight = False
-        self.facets = set()
+        self.facets = {}
         self.date_facets = {}
         self.query_facets = []
         self.narrow_queries = set()
@@ -312,9 +312,10 @@ class BaseSearchQuery(object):
         self._results = None
         self._hit_count = None
         self._facet_counts = None
+        self._stats = None
         self._spelling_suggestion = None
         self.result_class = SearchResult
-
+        self.stats = {}
         from haystack import connections
         self._using = using
         self.backend = connections[self._using].get_backend()
@@ -354,7 +355,7 @@ class BaseSearchQuery(object):
             kwargs['highlight'] = self.highlight
 
         if self.facets:
-            kwargs['facets'] = list(self.facets)
+            kwargs['facets'] = self.facets
 
         if self.date_facets:
             kwargs['date_facets'] = self.date_facets
@@ -497,6 +498,17 @@ class BaseSearchQuery(object):
 
         return self._facet_counts
 
+    def get_stats(self):
+        """
+        Returns the stats received from the backend.
+
+        If the query has not been run, this will execute the query and store
+        the results
+        """
+        if self._stats is None:
+            self.run()
+        return self._stats
+
     def get_spelling_suggestion(self, preferred_query=None):
         """
         Returns the spelling suggestion received from the backend.
@@ -599,7 +611,7 @@ class BaseSearchQuery(object):
         else:
             connector = SQ.AND
 
-        if self.query_filter and query_filter.connector != SQ.AND and len(query_filter) > 1:
+        if self.query_filter and query_filter.connector != connector and len(query_filter) > 1:
             self.query_filter.start_subtree(connector)
             subtree = True
         else:
@@ -693,6 +705,10 @@ class BaseSearchQuery(object):
         self._more_like_this = True
         self._mlt_instance = model_instance
 
+    def add_stats_query(self,stats_field,stats_facets):
+        """Adds stats and stats_facets queries for the Solr backend."""
+        self.stats[stats_field] = stats_facets
+
     def add_highlight(self):
         """Adds highlighting to the search results."""
         self.highlight = True
@@ -726,10 +742,11 @@ class BaseSearchQuery(object):
             'point': ensure_point(point),
         }
 
-    def add_field_facet(self, field):
+    def add_field_facet(self, field, **options):
         """Adds a regular facet on a field."""
         from haystack import connections
-        self.facets.add(connections[self._using].get_unified_index().get_facet_fieldname(field))
+        field_name = connections[self._using].get_unified_index().get_facet_fieldname(field)
+        self.facets[field_name] = options.copy()
 
     def add_date_facet(self, field, start_date, end_date, gap_by, gap_amount=1):
         """Adds a date-based facet on a field."""
@@ -825,6 +842,7 @@ class BaseSearchQuery(object):
         clone.models = self.models.copy()
         clone.boost = self.boost.copy()
         clone.highlight = self.highlight
+        clone.stats = self.stats.copy()
         clone.facets = self.facets.copy()
         clone.date_facets = self.date_facets.copy()
         clone.query_facets = self.query_facets[:]
@@ -837,6 +855,7 @@ class BaseSearchQuery(object):
         clone.distance_point = self.distance_point.copy()
         clone._raw_query = self._raw_query
         clone._raw_query_params = self._raw_query_params
+
         return clone
 
 

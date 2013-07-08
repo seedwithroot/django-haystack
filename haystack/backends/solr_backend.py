@@ -1,4 +1,3 @@
-import logging
 import warnings
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
@@ -6,14 +5,11 @@ from django.db.models.loading import get_model
 from haystack.backends import BaseEngine, BaseSearchBackend, BaseSearchQuery, log_query, EmptyResults
 from haystack.constants import ID, DJANGO_CT, DJANGO_ID
 from haystack.exceptions import MissingDependency, MoreLikeThisError
-from haystack.inputs import PythonData, Clean, Exact
+from haystack.inputs import PythonData, Clean, Exact, Raw
 from haystack.models import SearchResult
 from haystack.utils import get_identifier
-try:
-    from django.db.models.sql.query import get_proxied_model
-except ImportError:
-    # Likely on Django 1.0
-    get_proxied_model = None
+from haystack.utils import log as logging
+
 try:
     from pysolr import Solr, SolrError
 except ImportError:
@@ -33,7 +29,7 @@ class SolrSearchBackend(BaseSearchBackend):
     # The '\\' must come first, so as not to overwrite the other slash replacements.
     RESERVED_CHARACTERS = (
         '\\', '+', '-', '&&', '||', '!', '(', ')', '{', '}',
-        '[', ']', '^', '"', '~', '*', '?', ':',
+        '[', ']', '^', '"', '~', '*', '?', ':', '/',
     )
 
     def __init__(self, connection_alias, **connection_options):
@@ -140,7 +136,7 @@ class SolrSearchBackend(BaseSearchBackend):
                             narrow_queries=None, spelling_query=None,
                             within=None, dwithin=None, distance_point=None,
                             models=None, limit_to_registered_models=None,
-                            result_class=None):
+                            result_class=None, stats=None):
         kwargs = {'fl': '* score'}
 
         if fields:
@@ -187,7 +183,11 @@ class SolrSearchBackend(BaseSearchBackend):
 
         if facets is not None:
             kwargs['facet'] = 'on'
-            kwargs['facet.field'] = facets
+            kwargs['facet.field'] = facets.keys()
+
+            for facet_field, options in facets.items():
+                for key, value in options.items():
+                    kwargs['f.%s.facet.%s' % (facet_field, key)] = self.conn._from_python(value)
 
         if date_facets is not None:
             kwargs['facet'] = 'on'
@@ -230,6 +230,15 @@ class SolrSearchBackend(BaseSearchBackend):
         if narrow_queries is not None:
             kwargs['fq'] = list(narrow_queries)
 
+        if stats:
+            kwargs['stats'] = "true"
+
+            for k in stats.keys():
+                kwargs['stats.field'] = k
+
+                for facet in stats[k]:
+                    kwargs['f.%s.stats.facet' % k] = facet
+
         if within is not None:
             from haystack.utils.geo import generate_bounding_box
 
@@ -264,11 +273,9 @@ class SolrSearchBackend(BaseSearchBackend):
                        limit_to_registered_models=None, result_class=None, **kwargs):
         from haystack import connections
 
-        # Handle deferred models.
-        if get_proxied_model and hasattr(model_instance, '_deferred') and model_instance._deferred:
-            model_klass = get_proxied_model(model_instance._meta)
-        else:
-            model_klass = type(model_instance)
+        # Deferred models will have a different class ("RealClass_Deferred_fieldname")
+        # which won't be in our registry:
+        model_klass = model_instance._meta.concrete_model
 
         index = connections[self.connection_alias].get_unified_index().get_index(model_klass)
         field_name = index.get_content_field()
@@ -326,10 +333,14 @@ class SolrSearchBackend(BaseSearchBackend):
         results = []
         hits = raw_results.hits
         facets = {}
+        stats = {}
         spelling_suggestion = None
 
         if result_class is None:
             result_class = SearchResult
+
+        if hasattr(raw_results,'stats'):
+            stats = raw_results.stats.get('stats_fields',{})
 
         if hasattr(raw_results, 'facets'):
             facets = {
@@ -393,6 +404,7 @@ class SolrSearchBackend(BaseSearchBackend):
         return {
             'results': results,
             'hits': hits,
+            'stats': stats,
             'facets': facets,
             'spelling_suggestion': spelling_suggestion,
         }
@@ -591,14 +603,15 @@ class SolrSearchQuery(BaseSearchQuery):
 
                 query_frag = filter_types[filter_type] % prepared_value
 
-        if len(query_frag) and not query_frag.startswith('(') and not query_frag.endswith(')'):
-            query_frag = "(%s)" % query_frag
+        if len(query_frag) and not isinstance(value, Raw):
+            if not query_frag.startswith('(') and not query_frag.endswith(')'):
+                query_frag = "(%s)" % query_frag
 
         return u"%s%s" % (index_fieldname, query_frag)
 
     def build_alt_parser_query(self, parser_name, query_string='', **kwargs):
         if query_string:
-            kwargs['v'] = query_string
+            query_string = Clean(query_string).prepare(self)
 
         kwarg_bits = []
 
@@ -608,13 +621,13 @@ class SolrSearchQuery(BaseSearchQuery):
             else:
                 kwarg_bits.append(u"%s=%s" % (key, kwargs[key]))
 
-        return u"{!%s %s}" % (parser_name, ' '.join(kwarg_bits))
+        return u'_query_:"{!%s %s}%s"' % (parser_name, Clean(' '.join(kwarg_bits)), query_string)
 
     def build_params(self, spelling_query=None, **kwargs):
         search_kwargs = {
             'start_offset': self.start_offset,
             'result_class': self.result_class
-        }        
+        }
         order_by_list = None
 
         if self.order_by:
@@ -642,7 +655,7 @@ class SolrSearchQuery(BaseSearchQuery):
             search_kwargs['end_offset'] = self.end_offset
 
         if self.facets:
-            search_kwargs['facets'] = list(self.facets)
+            search_kwargs['facets'] = self.facets
 
         if self.fields:
             search_kwargs['fields'] = self.fields
@@ -665,16 +678,21 @@ class SolrSearchQuery(BaseSearchQuery):
         if spelling_query:
             search_kwargs['spelling_query'] = spelling_query
 
+        if self.stats:
+            search_kwargs['stats'] = self.stats
+
         return search_kwargs
-        
+
     def run(self, spelling_query=None, **kwargs):
         """Builds and executes the query. Returns a list of search results."""
         final_query = self.build_query()
         search_kwargs = self.build_params(spelling_query, **kwargs)
+
         results = self.backend.search(final_query, **search_kwargs)
         self._results = results.get('results', [])
         self._hit_count = results.get('hits', 0)
         self._facet_counts = self.post_process_facets(results)
+        self._stats = results.get('stats',{})
         self._spelling_suggestion = results.get('spelling_suggestion', None)
 
     def run_mlt(self, **kwargs):
@@ -686,6 +704,7 @@ class SolrSearchQuery(BaseSearchQuery):
         search_kwargs = {
             'start_offset': self.start_offset,
             'result_class': self.result_class,
+            'models': self.models
         }
 
         if self.end_offset is not None:
